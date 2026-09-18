@@ -1,0 +1,5 @@
+.build/
+release/*.app/
+.DS_Store
+release/*.zip
+release/*.sha256
