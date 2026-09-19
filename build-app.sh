@@ -25,7 +25,7 @@ printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 cp "$ROOT/Assets/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 codesign --force --deep --sign - "$APP_DIR"
 
-ARCHIVE="$ROOT/release/IINA-Companion-Menu-0.4.2.zip"
+ARCHIVE="$ROOT/release/IINA-Companion-Menu-0.4.3.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" | awk '{print $1}' > "$ARCHIVE.sha256"
 echo "$APP_DIR"

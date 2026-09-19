@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 struct PlayerSummary: Identifiable, Equatable {
@@ -17,8 +18,16 @@ struct PlayerSummary: Identifiable, Equatable {
 struct PlaylistMenuItem: Identifiable {
     let index: Int
     let label: String
+    let filename: String
     let isPlaying: Bool
+    let duration: Double?
     var id: Int { index }
+
+    var formattedDuration: String {
+        guard let duration, duration.isFinite, duration >= 0 else { return "--:--" }
+        let seconds = Int(duration.rounded(.up))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 }
 
 @MainActor
@@ -28,7 +37,10 @@ final class IINARemote: ObservableObject {
     @Published var lastError = ""
     @Published var players: [PlayerSummary] = []
     @Published var selectedPlayerID = ""
-    @Published var state: [String: Any] = [:]
+    @Published var state: [String: Any] = [:] {
+        didSet { refreshPlaylistDurations() }
+    }
+    @Published private var playlistDurations: [String: Double] = [:]
 
     private var host = "127.0.0.1"
     private var port = 19190
@@ -62,7 +74,15 @@ final class IINARemote: ObservableObject {
         return rawItems.enumerated().map { offset, item in
             let index = (item["id"] as? NSNumber)?.intValue ?? offset
             let label = item["label"] as? String ?? "項目 \(index + 1)"
-            return PlaylistMenuItem(index: index, label: label, isPlaying: item["isPlaying"] as? Bool ?? false)
+            let filename = item["filename"] as? String ?? ""
+            let suppliedDuration = number(item["duration"])
+            return PlaylistMenuItem(
+                index: index,
+                label: label,
+                filename: filename,
+                isPlaying: item["isPlaying"] as? Bool ?? false,
+                duration: suppliedDuration ?? playlistDurations[filename]
+            )
         }
     }
     var formattedDuration: String { formatTime(number(state["duration"])) }
@@ -281,6 +301,48 @@ final class IINARemote: ObservableObject {
         if let value = value as? Int { return Double(value) }
         if let value = value as? NSNumber { return value.doubleValue }
         return nil
+    }
+
+    private func refreshPlaylistDurations() {
+        guard let rawItems = state["playlistItems"] as? [[String: Any]] else { return }
+
+        if let currentFilename = state["filename"] as? String,
+           !currentFilename.isEmpty,
+           let currentDuration = number(state["duration"]),
+           currentDuration.isFinite,
+           currentDuration > 0 {
+            playlistDurations[currentFilename] = currentDuration
+        }
+
+        for item in rawItems {
+            guard let filename = item["filename"] as? String,
+                  !filename.isEmpty,
+                  playlistDurations[filename] == nil,
+                  number(item["duration"]) == nil,
+                  let url = mediaURL(for: filename) else { continue }
+
+            // A negative value marks an item whose metadata request is already running.
+            playlistDurations[filename] = -1
+            Task { [weak self] in
+                let asset = AVURLAsset(url: url)
+                let loadedDuration = try? await asset.load(.duration)
+                guard let self else { return }
+                if let seconds = loadedDuration?.seconds,
+                   seconds.isFinite,
+                   seconds >= 0 {
+                    self.playlistDurations[filename] = seconds
+                } else {
+                    // Keep failed items cached so frequent state updates do not retry every 500 ms.
+                    self.playlistDurations[filename] = -.infinity
+                }
+            }
+        }
+    }
+
+    private func mediaURL(for filename: String) -> URL? {
+        if filename.hasPrefix("file://") { return URL(string: filename) }
+        if filename.contains("://") { return nil }
+        return URL(fileURLWithPath: filename)
     }
 
     private func formatTime(_ value: Double?) -> String {
